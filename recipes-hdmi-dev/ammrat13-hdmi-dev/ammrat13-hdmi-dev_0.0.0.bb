@@ -8,15 +8,19 @@ inherit module
 SRC_URI = "\
     file://LICENSE.md \
     file://Makefile \
+    file://ammrat13-hdmi-dev.conf \
     file://ammrat13-hdmi-dev.c \
 "
 
 # Handle loading this module automatically on boot
-FILES:${PN} += "/etc/ /etc/modules-load.d/ /etc/modules-load.d/ammrat13-hdmi-dev"
+FILES:${PN} += "\
+    /etc/ \
+    /etc/modules-load.d/ \
+    /etc/modules-load.d/ammrat13-hdmi-dev.conf \
+"
 do_install:append() {
     install -m 0755 -d ${D}/etc/modules-load.d/
-    echo "ammrat13-hdmi-dev" > ${D}/etc/modules-load.d/ammrat13-hdmi-dev
-    chmod 0644 ${D}/etc/modules-load.d/ammrat13-hdmi-dev
+    install -m 0644 -t ${D}/etc/modules-load.d/ ${S}/ammrat13-hdmi-dev.conf
 }
 
 S = "${WORKDIR}"
