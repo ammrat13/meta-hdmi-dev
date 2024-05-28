@@ -30,7 +30,7 @@ struct hdmi_driver_data {
 #define HDMI_GIE_OFF 0x04
 #define HDMI_IER_OFF 0x08
 #define HDMI_ISR_OFF 0x0c
-#define HDMI_FRAMEBUF_OFF 0x10
+#define HDMI_BUF_OFF 0x10
 #define HDMI_COORD_DATA_OFF 0x18
 #define HDMI_COORD_CTRL_OFF 0x1c
 
@@ -131,7 +131,7 @@ int hdmi_probe(struct platform_device *pdev) {
     pr_info("registered handler for IRQ %d\n", irq);
   }
 
-  // Allocate the framebuffer in DMA memory
+  // Allocate the buffer in DMA memory
   {
     void *v;
     dma_addr_t b;
@@ -142,15 +142,17 @@ int hdmi_probe(struct platform_device *pdev) {
     v = dmam_alloc_attrs(&pdev->dev, HDMI_BUF_ALLOC_BYTES, &b, GFP_KERNEL,
                          DMA_ATTR_WRITE_COMBINE);
     if (!v) {
-      pr_err("failed to allocate framebuffer\n");
+      pr_err("failed to allocate buffer\n");
       return -ENOMEM;
     }
     // Update the driver data
     ddata->buf_virt = v;
     ddata->buf_bus = b;
-    pr_info("allocated framebuffer @ %p (bus: %x)\n", v, b);
+    pr_info("allocated buffer @ %p (bus: %x)\n", v, b);
   }
 
+  // Set the buffer address
+  iowrite32(ddata->buf_bus, ddata->registers + HDMI_BUF_OFF);
   // Enable interrupts
   iowrite32(0x01, ddata->registers + HDMI_GIE_OFF);
   iowrite32(0x03, ddata->registers + HDMI_IER_OFF);
