@@ -8,6 +8,9 @@
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
+// -----------------------------------------------------------------------------
+// HDMI Driver Data
+
 // Structure describing an HDMI Peripheral. We allocate one of these on probe,
 // and we stick it in the `driver_data` field of the device.
 struct hdmi_driver_data {
@@ -24,6 +27,9 @@ struct hdmi_driver_data {
 #define HDMI_FRAMEBUF_OFF 0x10
 #define HDMI_COORD_DATA_OFF 0x18
 #define HDMI_COORD_CTRL_OFF 0x1c
+
+// -----------------------------------------------------------------------------
+// HDMI Platform Driver
 
 static irqreturn_t hdmi_irq_handler(int irq, void *ddata_cookie) {
 
@@ -51,8 +57,9 @@ int hdmi_probe(struct platform_device *pdev) {
   // Pointer to this device's driver data on the heap
   struct hdmi_driver_data *ddata;
 
-  // Log
+  // Log and initialize variables
   pr_info("called probe on %p\n", pdev);
+  ddata = NULL;
 
   // Allocate the driver data and set it in the `struct device`
   {
@@ -149,6 +156,9 @@ int hdmi_remove(struct platform_device *pdev) {
 
   return 0;
 }
+
+// -----------------------------------------------------------------------------
+// Module Registration
 
 // Match table for which devices in the device tree to probe with this driver.
 // This is included in the `struct platform_driver` below. The names for the
