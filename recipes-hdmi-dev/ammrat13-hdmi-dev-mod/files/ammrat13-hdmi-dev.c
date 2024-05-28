@@ -4,6 +4,7 @@
 
 #include <asm/io.h>
 #include <linux/device/driver.h>
+#include <linux/interrupt.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
@@ -23,6 +24,27 @@ struct hdmi_driver_data {
 #define HDMI_FRAMEBUF_OFF 0x10
 #define HDMI_COORD_DATA_OFF 0x18
 #define HDMI_COORD_CTRL_OFF 0x1c
+
+static irqreturn_t hdmi_irq_handler(int irq, void *ddata_cookie) {
+
+  // Pointer to this device's driver data on the heap
+  struct hdmi_driver_data *ddata;
+  // The interrupts we have to service
+  u32 isr;
+
+  // Extract the driver data from the cookie
+  ddata = ddata_cookie;
+
+  // Check to see if we even have an interrupt from this device
+  if ((ioread32(ddata->registers + HDMI_CTRL_OFF) & 0x200) == 0)
+    return IRQ_NONE;
+  // If we do, read the ISR's contents
+  isr = ioread32(ddata->registers + HDMI_ISR_OFF);
+
+  // Acknowlege all the present interrupts
+  iowrite32(isr, ddata->registers + HDMI_ISR_OFF);
+  return IRQ_HANDLED;
+}
 
 int hdmi_probe(struct platform_device *pdev) {
 
@@ -63,6 +85,31 @@ int hdmi_probe(struct platform_device *pdev) {
     pr_info("mapped registers @ %p\n", reg);
   }
 
+  // Register the IRQ handler
+  {
+    int irq;
+    int res;
+    // Check that the IRQ exists
+    irq = platform_get_irq(pdev, 0);
+    if (irq < 0) {
+      pr_err("failed to get IRQ\n");
+      return irq;
+    }
+    // Register the IRQ handler. Pass it the driver data as the cookie. Note
+    // that this won't see interrupts until we start the device.
+    res = devm_request_irq(&pdev->dev, irq, hdmi_irq_handler, 0,
+                           "ammrat13-hdmi-dev", ddata);
+    if (res < 0) {
+      pr_err("failed to request IRQ\n");
+      return res;
+    }
+    // Log success
+    pr_info("registered handler for IRQ %d\n", irq);
+  }
+
+  // Enable interrupts
+  iowrite32(0x01, ddata->registers + HDMI_GIE_OFF);
+  iowrite32(0x03, ddata->registers + HDMI_IER_OFF);
   // Start the device
   iowrite32(0x081, ddata->registers + HDMI_CTRL_OFF);
 
@@ -87,6 +134,9 @@ int hdmi_remove(struct platform_device *pdev) {
 
   // Stop the device
   iowrite32(0x000, ddata->registers + HDMI_CTRL_OFF);
+  // Disable interrupts
+  iowrite32(0x00, ddata->registers + HDMI_GIE_OFF);
+  iowrite32(0x00, ddata->registers + HDMI_IER_OFF);
 
   return 0;
 }
