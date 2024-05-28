@@ -1,7 +1,7 @@
 SUMMARY = "HDMI Device Kernel Module"
 DESCRIPTION = "Kernel module to drive ammrat13's HDMI Peripheral"
-LICENSE = "MIT"
-LIC_FILES_CHKSUM = "file://LICENSE.md;md5=1a4de40bb78539f9fcfa73935eea026e"
+LICENSE = "GPL-2.0-or-later"
+LIC_FILES_CHKSUM = "file://LICENSE.md;md5=b234ee4d69f5fce4486a80fdaf4a4263"
 
 inherit module
 
