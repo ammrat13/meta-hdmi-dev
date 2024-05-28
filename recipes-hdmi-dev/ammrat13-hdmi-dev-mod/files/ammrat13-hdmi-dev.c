@@ -68,6 +68,9 @@ int hdmi_probe(struct platform_device *pdev) {
     BUG_ON((unsigned long)dev_get_drvdata(&pdev->dev) != (unsigned long)ddata);
   }
 
+  // Initialize everything to `NULL`
+  ddata->registers = NULL;
+
   // Get the registers for this device. Map it into our address space and store
   // the virtual address.
   {
@@ -121,6 +124,9 @@ int hdmi_remove(struct platform_device *pdev) {
   // This means they will be cleaned up automatically when this function
   // returns. We just have to deal with the non-managed resources.
   //
+  // Also, we know that the device was successfully probed if we made it here.
+  // The `remove` function is not called on probe failure.
+  //
   // The mainline kernel says that the return value from this function is
   // ignored. So, we always return 0. It also means we have to do our own error
   // handling if needed.
@@ -131,6 +137,9 @@ int hdmi_remove(struct platform_device *pdev) {
   // Log and initialize variables
   pr_info("called remove on %p\n", pdev);
   ddata = dev_get_drvdata(&pdev->dev);
+  // We should not have uninitialized driver data
+  BUG_ON(!ddata);
+  BUG_ON(!ddata->registers);
 
   // Stop the device
   iowrite32(0x000, ddata->registers + HDMI_CTRL_OFF);
