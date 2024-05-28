@@ -4,6 +4,7 @@
 
 #include <asm/io.h>
 #include <linux/device/driver.h>
+#include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
@@ -17,6 +18,11 @@ struct hdmi_driver_data {
 
   // The MMIO region for the device, mapped into our virtual address space
   void __iomem *registers;
+
+  // The virtual address of the framebuffer memory
+  u32 *buf_virt;
+  // The bus address of the framebuffer memory
+  dma_addr_t buf_bus;
 };
 
 // Byte offsets for all the registers
@@ -27,6 +33,12 @@ struct hdmi_driver_data {
 #define HDMI_FRAMEBUF_OFF 0x10
 #define HDMI_COORD_DATA_OFF 0x18
 #define HDMI_COORD_CTRL_OFF 0x1c
+
+// The size of the framebuffer memory in words and in bytes. Also, how much we
+// should allocate.
+#define HDMI_BUF_LEN_WORDS (640 * 480)
+#define HDMI_BUF_LEN_BYTES (HDMI_BUF_LEN_WORDS * 4)
+#define HDMI_BUF_ALLOC_BYTES (PAGE_ALIGN(HDMI_BUF_LEN_BYTES))
 
 // -----------------------------------------------------------------------------
 // HDMI Platform Driver
@@ -77,6 +89,8 @@ int hdmi_probe(struct platform_device *pdev) {
 
   // Initialize everything to `NULL`
   ddata->registers = NULL;
+  ddata->buf_virt = NULL;
+  ddata->buf_bus = 0;
 
   // Get the registers for this device. Map it into our address space and store
   // the virtual address.
@@ -117,6 +131,26 @@ int hdmi_probe(struct platform_device *pdev) {
     pr_info("registered handler for IRQ %d\n", irq);
   }
 
+  // Allocate the framebuffer in DMA memory
+  {
+    void *v;
+    dma_addr_t b;
+    // Do the allocation. We allow write combining. Also, we could force the
+    // allocation to be contiguous. However, it should be fine because the
+    // kernel will return a contiguous bus address space, which is really what
+    // we need.
+    v = dmam_alloc_attrs(&pdev->dev, HDMI_BUF_ALLOC_BYTES, &b, GFP_KERNEL,
+                         DMA_ATTR_WRITE_COMBINE);
+    if (!v) {
+      pr_err("failed to allocate framebuffer\n");
+      return -ENOMEM;
+    }
+    // Update the driver data
+    ddata->buf_virt = v;
+    ddata->buf_bus = b;
+    pr_info("allocated framebuffer @ %p (bus: %x)\n", v, b);
+  }
+
   // Enable interrupts
   iowrite32(0x01, ddata->registers + HDMI_GIE_OFF);
   iowrite32(0x03, ddata->registers + HDMI_IER_OFF);
@@ -147,8 +181,10 @@ int hdmi_remove(struct platform_device *pdev) {
   // We should not have uninitialized driver data
   BUG_ON(!ddata);
   BUG_ON(!ddata->registers);
+  BUG_ON(!ddata->buf_virt);
+  BUG_ON(!ddata->buf_bus);
 
-  // Stop the device
+  // First and foremost, stop the device
   iowrite32(0x000, ddata->registers + HDMI_CTRL_OFF);
   // Disable interrupts
   iowrite32(0x00, ddata->registers + HDMI_GIE_OFF);
