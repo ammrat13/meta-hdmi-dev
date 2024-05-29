@@ -1,12 +1,12 @@
 SUMMARY = "HDMI Device Kernel Module"
 DESCRIPTION = "Kernel module to drive ammrat13's HDMI Peripheral"
 LICENSE = "GPL-2.0-or-later"
-LIC_FILES_CHKSUM = "file://LICENSE.md;md5=b234ee4d69f5fce4486a80fdaf4a4263"
+LIC_FILES_CHKSUM = "file://LICENSE;md5=b234ee4d69f5fce4486a80fdaf4a4263"
 
 inherit module
 
 SRC_URI = "\
-    file://LICENSE.md \
+    file://LICENSE \
     file://Makefile \
     file://ammrat13-hdmi-dev.conf \
     file://ammrat13-hdmi-dev.c \
