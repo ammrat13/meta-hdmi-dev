@@ -131,15 +131,15 @@ int hdmi_probe(struct platform_device *pdev) {
     pr_info("registered handler for IRQ %d\n", irq);
   }
 
-  // Allocate the buffer in DMA memory
+  // Allocate the buffer in DMA memory. The buffer doesn't have to be physically
+  // contiguous in memory, as long as its contiguous in bus memory. The kernel
+  // will use the IOMMU to ensure this, or allocate it contiguously. We also
+  // allow for buffered writes to the buffer.
   {
     void *v;
     dma_addr_t b;
-    // Do the allocation. We allow write combining. Also, we could force the
-    // allocation to be contiguous. However, it should be fine because the
-    // kernel will return a contiguous bus address space, which is really what
-    // we need.
-    v = dmam_alloc_attrs(&pdev->dev, HDMI_BUF_ALLOC_BYTES, &b, GFP_KERNEL,
+    // Do the allocation
+    v = dmam_alloc_attrs(&pdev->dev, HDMI_BUF_LEN_BYTES, &b, GFP_KERNEL,
                          DMA_ATTR_WRITE_COMBINE);
     if (!v) {
       pr_err("failed to allocate buffer\n");
