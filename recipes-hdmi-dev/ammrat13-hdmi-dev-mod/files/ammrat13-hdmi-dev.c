@@ -5,6 +5,7 @@
 #include <asm/io.h>
 #include <linux/device/driver.h>
 #include <linux/dma-mapping.h>
+#include <linux/fb.h>
 #include <linux/interrupt.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
@@ -26,6 +27,13 @@ struct hdmi_driver_data {
   // the same as physical addresses, but that isn't true with an IOMMU.
   u32 *buf_virt;
   dma_addr_t buf_bus;
+
+  // Backwards pointer to the framebuffer device. This `struct fb_info`
+  // references the `struct device` which contains the driver data.
+  //
+  // FIXME: We could have the driver data be a `struct fb_info`, with the
+  // auxiliary data going in the `par` field. This would reduce redundancy.
+  struct fb_info *fb;
 };
 
 static void hdmi_drvdata_assert_init(struct hdmi_driver_data *drvdata) {
@@ -35,18 +43,115 @@ static void hdmi_drvdata_assert_init(struct hdmi_driver_data *drvdata) {
   BUG_ON(!drvdata->registers);
   BUG_ON(!drvdata->buf_virt);
   BUG_ON(!drvdata->buf_bus);
+  BUG_ON(!drvdata->fb);
 }
 
-static const off_t HDMI_CTRL_OFF = 0x00;
-static const off_t HDMI_GIE_OFF = 0x04;
-static const off_t HDMI_IER_OFF = 0x08;
-static const off_t HDMI_ISR_OFF = 0x0c;
-static const off_t HDMI_BUF_OFF = 0x10;
-static const off_t HDMI_COORD_DATA_OFF = 0x18;
-static const off_t HDMI_COORD_CTRL_OFF = 0x1c;
+static const off_t HDMI_CTRL_OFF = 0x00l;
+static const off_t HDMI_GIE_OFF = 0x04l;
+static const off_t HDMI_IER_OFF = 0x08l;
+static const off_t HDMI_ISR_OFF = 0x0cl;
+static const off_t HDMI_BUF_OFF = 0x10l;
+static const off_t HDMI_COORD_DATA_OFF = 0x18l;
+static const off_t HDMI_COORD_CTRL_OFF = 0x1cl;
 
-static const size_t HDMI_BUF_LEN_WORDS = 640ul * 480ul;
-static const size_t HDMI_BUF_LEN_BYTES = HDMI_BUF_LEN_WORDS * 4ul;
+static const size_t HDMI_MMIO_LEN = 0x20ul;
+static const size_t HDMI_BUF_LEN = 640ul * 480ul * 4ul;
+static const size_t HDMI_LINE_LEN = 640ul * 4ul;
+
+// -----------------------------------------------------------------------------
+// Framebuffer Driver
+
+static struct fb_fix_screeninfo hdmi_fix_template = {
+    // Make sure to set `.smem_start` and `.mmio_start`
+    .id = "ammrat13",
+    .smem_len = HDMI_BUF_LEN,
+    .type = FB_TYPE_PACKED_PIXELS,
+    .visual = FB_VISUAL_TRUECOLOR,
+    .xpanstep = 0,
+    .ypanstep = 0,
+    .ywrapstep = 0,
+    .line_length = HDMI_LINE_LEN,
+    .mmio_len = HDMI_MMIO_LEN,
+    .accel = FB_ACCEL_NONE,
+    .capabilities = 0,
+};
+
+static struct fb_var_screeninfo hdmi_var = {
+    .xres = 640,
+    .yres = 480,
+    .xres_virtual = 640,
+    .yres_virtual = 480,
+    .xoffset = 0,
+    .yoffset = 0,
+    .bits_per_pixel = 32,
+    .grayscale = 0,
+    .red = {.offset = 16, .length = 8, .msb_right = 0},
+    .green = {.offset = 8, .length = 8, .msb_right = 0},
+    .blue = {.offset = 0, .length = 8, .msb_right = 0},
+    .nonstd = 0,
+    .pixclock = 39721u,
+    .left_margin = 40u,
+    .right_margin = 24u,
+    .upper_margin = 32u,
+    .lower_margin = 11u,
+    .hsync_len = 96u,
+    .vsync_len = 2u,
+    .sync = FB_SYNC_HOR_HIGH_ACT | FB_SYNC_VERT_HIGH_ACT,
+    .vmode = FB_VMODE_NONINTERLACED,
+};
+
+static struct fb_ops hdmi_ops = {
+    .fb_read = fb_sys_read,
+    .fb_write = fb_sys_write,
+    .fb_fillrect = cfb_fillrect,
+    .fb_copyarea = cfb_copyarea,
+    .fb_imageblit = cfb_imageblit,
+};
+
+static int hdmi_probe_init_fb(struct platform_device *pdev) {
+  // Initialize a framebuffer device for the HDMI peripheral. This function is
+  // called after the rest of the driver data is initialized. On failure, this
+  // function has to clean up after itself.
+  struct hdmi_driver_data *drvdata;
+  struct fb_info *fb;
+  int ret;
+
+  drvdata = dev_get_drvdata(&pdev->dev);
+  BUG_ON(!drvdata);
+
+  // This allocation is unmanaged, so future failures have to `goto fail`
+  fb = framebuffer_alloc(0, &pdev->dev);
+  if (!fb) {
+    pr_err("failed to allocate framebuffer\n");
+    return -ENOMEM;
+  }
+  pr_info("allocated framebuffer @ %p\n", fb);
+
+  fb->fix = hdmi_fix_template;
+  fb->fix.smem_start = (unsigned long)drvdata->buf_bus;
+  fb->fix.mmio_start = (unsigned long)drvdata->registers;
+  fb->var = hdmi_var;
+  fb->fbops = &hdmi_ops;
+  fb->screen_base = (char __iomem *)drvdata->buf_virt;
+  fb->screen_size = HDMI_BUF_LEN;
+
+  ret = register_framebuffer(fb);
+  if (ret != 0) {
+    pr_err("failed to register framebuffer\n");
+    goto fail;
+  }
+  pr_info("registered framebuffer\n");
+
+  // If we got here, it's a success
+  drvdata->fb = fb;
+  return 0;
+  // We go here if we fail after allocating the framebuffer. Remember that it's
+  // unmanaged, so we have to free it ourselves.
+fail:
+  BUG_ON(!fb);
+  framebuffer_release(fb);
+  return ret;
+}
 
 // -----------------------------------------------------------------------------
 // HDMI Platform Driver
@@ -100,6 +205,8 @@ static int hdmi_probe_map_registers(struct platform_device *pdev) {
   void __iomem *reg;
 
   drvdata = dev_get_drvdata(&pdev->dev);
+  BUG_ON(!drvdata);
+
   res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
   reg = devm_ioremap_resource(&pdev->dev, res);
   if (IS_ERR(reg)) {
@@ -121,6 +228,7 @@ static int hdmi_probe_request_irq(struct platform_device *pdev) {
   int res;
 
   drvdata = dev_get_drvdata(&pdev->dev);
+  BUG_ON(!drvdata);
 
   irq = platform_get_irq(pdev, 0);
   if (irq < 0) {
@@ -154,8 +262,9 @@ static int hdmi_probe_alloc_buffer(struct platform_device *pdev) {
   dma_addr_t bus;
 
   drvdata = dev_get_drvdata(&pdev->dev);
+  BUG_ON(!drvdata);
 
-  vir = dmam_alloc_attrs(&pdev->dev, HDMI_BUF_LEN_BYTES, &bus, GFP_KERNEL,
+  vir = dmam_alloc_attrs(&pdev->dev, HDMI_BUF_LEN, &bus, GFP_KERNEL,
                          DMA_ATTR_WRITE_COMBINE);
   if (!vir) {
     pr_err("failed to allocate buffer\n");
@@ -173,6 +282,7 @@ static int hdmi_probe(struct platform_device *pdev) {
   int res;
 
   pr_info("called probe on %p\n", pdev);
+  BUG_ON(!pdev);
 
   // Call all the helper functions to initialize the platform device. All of
   // these should return 0 on success, and should not allocate any unmanaged
@@ -184,6 +294,10 @@ static int hdmi_probe(struct platform_device *pdev) {
   if ((res = hdmi_probe_request_irq(pdev)) != 0)
     return res;
   if ((res = hdmi_probe_alloc_buffer(pdev)) != 0)
+    return res;
+  // Register the framebuffer device. This process uses unmanaged resources, so
+  // we do this last to avoid having to free it in future error cases.
+  if ((res = hdmi_probe_init_fb(pdev)) != 0)
     return res;
 
   drvdata = dev_get_drvdata(&pdev->dev);
@@ -226,6 +340,12 @@ static int hdmi_remove(struct platform_device *pdev) {
   iowrite32(0x00, drvdata->registers + HDMI_IER_OFF);
   // Note that we keep the buffer address in the device. The next driver should
   // treat it as garbage, but it will allocate a new one.
+
+  // The `struct fb_info` is not managed, so we have to free it ourselves. To do
+  // so, we have to unregister then release - one is not enough.
+  unregister_framebuffer(drvdata->fb);
+  framebuffer_release(drvdata->fb);
+  drvdata->fb = NULL;
 
   return 0;
 }
