@@ -61,6 +61,18 @@ static const size_t HDMI_LINE_LEN = 640ul * 4ul;
 // -----------------------------------------------------------------------------
 // Framebuffer Driver
 
+static int hdmi_setcolreg(u_int regno, u_int red, u_int green, u_int blue, u_int transp, struct fb_info *info) {
+  if (regno >= 16)
+    return 1;
+
+  ((u32 *) (info->pseudo_palette))[regno] =
+      (red << info->var.red.offset) |
+      (green << info->var.green.offset) |
+      (blue << info->var.blue.offset) |
+      (transp << info->var.transp.offset);
+  return 0;
+}
+
 static struct fb_fix_screeninfo hdmi_fix_template = {
     // Make sure to set `.smem_start` and `.mmio_start`
     .id = "ammrat13",
@@ -88,6 +100,7 @@ static struct fb_var_screeninfo hdmi_var = {
     .red = {.offset = 16, .length = 8, .msb_right = 0},
     .green = {.offset = 8, .length = 8, .msb_right = 0},
     .blue = {.offset = 0, .length = 8, .msb_right = 0},
+    .transp = {.offset = 24, .length = 8, .msb_right = 0},
     .nonstd = 0,
     .pixclock = 39721u,
     .left_margin = 40u,
@@ -103,6 +116,7 @@ static struct fb_var_screeninfo hdmi_var = {
 static struct fb_ops hdmi_ops = {
     .fb_read = fb_sys_read,
     .fb_write = fb_sys_write,
+    .fb_setcolreg = hdmi_setcolreg,
     .fb_fillrect = cfb_fillrect,
     .fb_copyarea = cfb_copyarea,
     .fb_imageblit = cfb_imageblit,
@@ -134,6 +148,13 @@ static int hdmi_probe_init_fb(struct platform_device *pdev) {
   fb->fbops = &hdmi_ops;
   fb->screen_base = (char __iomem *)drvdata->buf_virt;
   fb->screen_size = HDMI_BUF_LEN;
+
+  fb->pseudo_palette = devm_kzalloc(&pdev->dev, 16 * sizeof(u32), GFP_KERNEL);
+  if (!fb->pseudo_palette) {
+    pr_err("failed to allocate pseudo palette\n");
+    ret = -ENOMEM;
+    goto fail;
+  }
 
   ret = register_framebuffer(fb);
   if (ret != 0) {
