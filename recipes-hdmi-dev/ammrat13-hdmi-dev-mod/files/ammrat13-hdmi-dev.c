@@ -26,19 +26,18 @@ struct hdmi_driver_data {
 };
 
 // Byte offsets for all the registers
-#define HDMI_CTRL_OFF 0x00
-#define HDMI_GIE_OFF 0x04
-#define HDMI_IER_OFF 0x08
-#define HDMI_ISR_OFF 0x0c
-#define HDMI_BUF_OFF 0x10
-#define HDMI_COORD_DATA_OFF 0x18
-#define HDMI_COORD_CTRL_OFF 0x1c
+static const off_t HDMI_CTRL_OFF = 0x00;
+static const off_t HDMI_GIE_OFF = 0x04;
+static const off_t HDMI_IER_OFF = 0x08;
+static const off_t HDMI_ISR_OFF = 0x0c;
+static const off_t HDMI_BUF_OFF = 0x10;
+static const off_t HDMI_COORD_DATA_OFF = 0x18;
+static const off_t HDMI_COORD_CTRL_OFF = 0x1c;
 
-// The size of the framebuffer memory in words and in bytes. Also, how much we
-// should allocate.
-#define HDMI_BUF_LEN_WORDS (640 * 480)
-#define HDMI_BUF_LEN_BYTES (HDMI_BUF_LEN_WORDS * 4)
-#define HDMI_BUF_ALLOC_BYTES (PAGE_ALIGN(HDMI_BUF_LEN_BYTES))
+// The size of the framebuffer memory in words and in bytes. We don't need to
+// round up to the page size because the allocator will do that for us.
+static const size_t HDMI_BUF_LEN_WORDS = 640ul * 480ul;
+static const size_t HDMI_BUF_LEN_BYTES = HDMI_BUF_LEN_WORDS * 4ul;
 
 // -----------------------------------------------------------------------------
 // HDMI Platform Driver
@@ -64,7 +63,7 @@ static irqreturn_t hdmi_irq_handler(int irq, void *ddata_cookie) {
   return IRQ_HANDLED;
 }
 
-int hdmi_probe(struct platform_device *pdev) {
+static int hdmi_probe(struct platform_device *pdev) {
 
   // Pointer to this device's driver data on the heap
   struct hdmi_driver_data *ddata;
@@ -162,7 +161,7 @@ int hdmi_probe(struct platform_device *pdev) {
   return 0;
 }
 
-int hdmi_remove(struct platform_device *pdev) {
+static int hdmi_remove(struct platform_device *pdev) {
   // When we were probing this device, we did our best to use managed resources.
   // This means they will be cleaned up automatically when this function
   // returns. We just have to deal with the non-managed resources.
