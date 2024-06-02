@@ -1,4 +1,5 @@
 #define pr_fmt(fmt) "ammrat13-hdmi-dev: " fmt
+#define DEBUG
 
 #include <linux/module.h>
 
@@ -25,7 +26,8 @@ static const size_t HDMI_MMIO_LEN = 0x20ul;
 static const size_t HDMI_BUF_LEN = 640ul * 480ul * 4ul;
 static const size_t HDMI_LINE_LEN = 640ul * 4ul;
 
-// Fired once at the start of every frame
+// Bitmask for an interrupt that's fired at the start of every frame. It's the
+// mask into the Interrupt Status Register and the Interrupt Enable Register.
 static const u32 HDMI_FRAMEIRQ = 0x02ul;
 
 static void hdmi_assert_types(void) {
@@ -122,8 +124,8 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
   blue = hdmi_setcolreg_cvtcolor(blue);
   transp = hdmi_setcolreg_cvtcolor(transp);
 
-  pr_info("setting color register %u to (%u, %u, %u, %u)\n", regno, red, green,
-          blue, transp);
+  pr_debug("setting color register %u to (%u, %u, %u, %u)\n", regno, red, green,
+           blue, transp);
   BUG_ON(info->pseudo_palette == NULL);
 
   // The pseudo palette is expected to be 16 entries long, and that's exactly
@@ -242,10 +244,10 @@ static int hdmi_probe_create_fbinfo(struct platform_device *pdev,
     pr_err("failed to allocate framebuffer device\n");
     return -ENOMEM;
   }
-  pr_info("allocated framebuffer device at %p\n", info);
 
   // Still need to set:
   //   * `.screen_base`
+  pr_info("allocated framebuffer device @ %p\n", *info);
   (*info)->fix = hdmi_fix_init;
   (*info)->var = hdmi_var_init;
   (*info)->fbops = &hdmi_fbops;
@@ -267,7 +269,7 @@ static int hdmi_probe_map_registers(struct platform_device *pdev,
     return PTR_ERR(reg);
   }
 
-  pr_info("mapped registers @ %p\n", reg);
+  pr_debug("mapped registers @ %p\n", reg);
   info->fix.mmio_start = (unsigned long)reg;
   return 0;
 }
@@ -290,7 +292,7 @@ static int hdmi_probe_alloc_buffer(struct platform_device *pdev,
     return -ENOMEM;
   }
 
-  pr_info("allocated buffer @ %p (bus: %x)\n", vir_addr, bus_addr);
+  pr_debug("allocated buffer @ %p (bus: %x)\n", vir_addr, bus_addr);
   info->screen_base = (void __force *)vir_addr;
   info->fix.smem_start = bus_addr;
   return 0;
@@ -308,7 +310,7 @@ static int hdmi_probe_alloc_pseudo_palette(struct platform_device *pdev,
     return -ENOMEM;
   }
 
-  pr_info("allocated pseudo palette @ %p\n", palette);
+  pr_debug("allocated pseudo palette @ %p\n", palette);
   info->pseudo_palette = palette;
   return 0;
 }
@@ -334,7 +336,7 @@ static int hdmi_probe_request_irq(struct platform_device *pdev,
     return res;
   }
 
-  pr_info("registered handler for IRQ %d\n", irq);
+  pr_debug("registered handler for IRQ %d\n", irq);
   return 0;
 }
 
@@ -348,7 +350,7 @@ static int hdmi_probe_register_fbinfo(struct fb_info *info) {
     pr_err("failed to register framebuffer device\n");
     return res;
   }
-  pr_info("registered framebuffer device\n");
+  pr_debug("registered framebuffer device\n");
   return 0;
 }
 
@@ -434,6 +436,7 @@ static int hdmi_remove(struct platform_device *pdev) {
 
   // The `struct fb_info` is not managed, so we have to free it ourselves. To do
   // so, we have to unregister then release - one is not enough.
+  pr_info("freeing framebuffer device @ %p\n", info);
   unregister_framebuffer(info);
   framebuffer_release(info);
   // Set all references to the `struct fb_info` to NULL for safety
