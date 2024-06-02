@@ -98,73 +98,6 @@ static irqreturn_t hdmi_isr(int irq, void *info_cookie) {
 }
 
 // -----------------------------------------------------------------------------
-// Framebuffer Operations
-
-static unsigned hdmi_setcolreg_cvtcolor(unsigned x) {
-  // Helper function to convert a 16-bit color value to an 8-bit color value.
-  // Everywhere else in the kernel uses 16-bit values, so we're forced to
-  // convert.
-  return ((x + 0x80u) >> 8);
-}
-
-static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
-                          unsigned blue, unsigned transp,
-                          struct fb_info *info) {
-  // For true-color mode, the kernel expects us to allocate and manage a pseudo
-  // palette. This is the function the kernel uses to set entries in that. We
-  // allocated it in the probe function.
-
-  WARN_ON(info == NULL);
-  if (info == NULL)
-    return 1;
-
-  // The inputs to this function are 16-bit, so convert to 8-bit
-  red = hdmi_setcolreg_cvtcolor(red);
-  green = hdmi_setcolreg_cvtcolor(green);
-  blue = hdmi_setcolreg_cvtcolor(blue);
-  transp = hdmi_setcolreg_cvtcolor(transp);
-
-  pr_debug("setting color register %u to (%u, %u, %u, %u)\n", regno, red, green,
-           blue, transp);
-  BUG_ON(info->pseudo_palette == NULL);
-
-  // The pseudo palette is expected to be 16 entries long, and that's exactly
-  // what we allocated
-  if (regno >= 16)
-    return 1;
-
-  // The fields here MUST match what's set in `info->var`
-  ((u32 *)info->pseudo_palette)[regno] =
-      ((red & 0xff) << 16) | ((green & 0xff) << 8) | ((blue & 0xff) << 0) |
-      ((transp & 0xff) << 24);
-  return 0;
-}
-
-static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info) {
-  // TODO
-  return 0;
-}
-
-static int hdmi_set_par(struct fb_info *info) {
-  // We don't have any parameters to set, so this function is effectively a
-  // no-op. Still, we use this opportunity to check that the `var` we're
-  // expected to set is good.
-  struct fb_var_screeninfo new_var;
-  int res;
-
-  pr_info("called set_par on %p\n", info);
-  WARN_ON(info == NULL);
-  if (info == NULL)
-    return 1;
-
-  new_var = info->var;
-  new_var.activate = FB_ACTIVATE_TEST;
-  WARN_ON(hdmi_check_var(&new_var, info) != 0);
-
-  return 0;
-}
-
-// -----------------------------------------------------------------------------
 // Framebuffer Structures
 
 static struct fb_fix_screeninfo hdmi_fix_init = {
@@ -196,8 +129,10 @@ static struct fb_var_screeninfo hdmi_var_init = {
     .red = {.offset = 16, .length = 8, .msb_right = 0},
     .green = {.offset = 8, .length = 8, .msb_right = 0},
     .blue = {.offset = 0, .length = 8, .msb_right = 0},
-    .transp = {.offset = 24, .length = 8, .msb_right = 0},
+    .transp = {.offset = 24, .length = 0, .msb_right = 0},
     .nonstd = 0,
+    .height = -1,
+    .width = -1,
     .pixclock = 39721u,
     .left_margin = 40u,
     .right_margin = 24u,
@@ -209,6 +144,115 @@ static struct fb_var_screeninfo hdmi_var_init = {
     .vmode = FB_VMODE_NONINTERLACED,
 };
 
+// -----------------------------------------------------------------------------
+// Framebuffer Operations
+
+static unsigned hdmi_setcolreg_cvtcolor(unsigned x) {
+  // Helper function to convert a 16-bit color value to an 8-bit color value.
+  // Everywhere else in the kernel uses 16-bit values, so we're forced to
+  // convert.
+  return ((x + 0x80u) >> 8);
+}
+
+static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
+                          unsigned blue, unsigned transp,
+                          struct fb_info *info) {
+  // For true-color mode, the kernel expects us to allocate and manage a pseudo
+  // palette. This is the function the kernel uses to set entries in that. We
+  // allocated it in the probe function.
+  if (WARN_ON(info == NULL))
+    return 1;
+
+  // The inputs to this function are 16-bit, so convert to 8-bit
+  red = hdmi_setcolreg_cvtcolor(red);
+  green = hdmi_setcolreg_cvtcolor(green);
+  blue = hdmi_setcolreg_cvtcolor(blue);
+  transp = hdmi_setcolreg_cvtcolor(transp);
+
+  pr_debug("setting color register %u to (%u, %u, %u, %u)\n", regno, red, green,
+           blue, transp);
+  BUG_ON(info->pseudo_palette == NULL);
+
+  // The pseudo palette is expected to be 16 entries long, and that's exactly
+  // what we allocated
+  if (regno >= 16)
+    return 1;
+
+  // The fields here MUST match what's set in `info->var`
+  ((u32 *)info->pseudo_palette)[regno] =
+      ((red & 0xff) << 16) | ((green & 0xff) << 8) | ((blue & 0xff) << 0);
+  return 0;
+}
+
+static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info) {
+  // This function gates user changes to the framebuffer geometry. The hardware
+  // only supports one configuration, though. So, we check if the thing passed
+  // in is close enough, modifying it if it is and erroring otherwise.
+
+  if (WARN_ON(var == NULL || info == NULL))
+    return -EINVAL;
+  pr_debug("called check_var for %p on %p\n", var, info);
+
+  // It appears that we're responsible for rounding up impossible values
+  if (var->xres_virtual < var->xres)
+    var->xres_virtual = var->xres;
+  if (var->yres_virtual < var->yres)
+    var->yres_virtual = var->yres;
+
+  // The resolution is fixed by the hardware, ...
+  if (var->xres != 640 || var->yres != 480) {
+    pr_debug("-> resolution mismatch\n");
+    return -EINVAL;
+  }
+  // ... as is the virtual resolution, ...
+  if (var->xres_virtual != 640 || var->yres_virtual != 480) {
+    pr_debug("-> virtual resolution mismatch\n");
+    return -EINVAL;
+  }
+  // ... the buffer structure, ...
+  if ((var->vmode & FB_VMODE_MASK) != FB_VMODE_NONINTERLACED) {
+    pr_debug("-> incorrect buffer structure\n");
+    return -EINVAL;
+  }
+  // ... and the color depth.
+  if (var->bits_per_pixel != 32 || var->grayscale != 0) {
+    pr_debug("-> color depth mismatch\n");
+    return -EINVAL;
+  }
+  // We don't support hardware panning.
+  if (var->xoffset != 0 || var->yoffset != 0) {
+    pr_debug("-> panning not supported\n");
+    return -EINVAL;
+  }
+
+  // If the request is close enough, modify the rest of the fields to match what
+  // we actually have. Note that this doesn't touch:
+  //  * `.activate`
+  //  * `.rotate` since that's handled in software
+  {
+    var->red = hdmi_var_init.red;
+    var->green = hdmi_var_init.green;
+    var->blue = hdmi_var_init.blue;
+    var->transp = hdmi_var_init.transp;
+    var->nonstd = hdmi_var_init.nonstd;
+
+    var->pixclock = hdmi_var_init.pixclock;
+    var->left_margin = hdmi_var_init.left_margin;
+    var->right_margin = hdmi_var_init.right_margin;
+    var->upper_margin = hdmi_var_init.upper_margin;
+    var->lower_margin = hdmi_var_init.lower_margin;
+    var->hsync_len = hdmi_var_init.hsync_len;
+    var->vsync_len = hdmi_var_init.vsync_len;
+    var->sync = hdmi_var_init.sync;
+
+    // The mode field is used both for interlacing and how the console should be
+    // updated. Only update the interlacing bit.
+    var->vmode =
+        (hdmi_var_init.vmode & FB_VMODE_MASK) | (var->vmode & ~FB_VMODE_MASK);
+  }
+  return 0;
+}
+
 static struct fb_ops hdmi_fbops = {
     .owner = THIS_MODULE,
     /* .fb_open is uneeded because we don't do user multiplexing */
@@ -216,7 +260,7 @@ static struct fb_ops hdmi_fbops = {
     .fb_read = fb_sys_read,
     .fb_write = fb_sys_write,
     .fb_check_var = hdmi_check_var,
-    .fb_set_par = hdmi_set_par,
+    /* .fb_set_par doesn't matter since the hardware isn't configurable */
     .fb_setcolreg = hdmi_setcolreg,
     /* .fb_setcmap iteratively calls .fb_setcolreg by default */
     /* .fb_blank errors by default */
@@ -360,8 +404,7 @@ static int hdmi_probe(struct platform_device *pdev) {
   hdmi_assert_types();
 
   pr_info("called probe on %p\n", pdev);
-  WARN_ON(pdev == NULL);
-  if (pdev == NULL)
+  if (WARN_ON(pdev == NULL))
     return -EINVAL;
 
   // The driver data is a `struct fb_info`. The allocation for it is unmanaged.
@@ -419,8 +462,7 @@ static int hdmi_remove(struct platform_device *pdev) {
   struct fb_info *info;
 
   pr_info("called remove on %p\n", pdev);
-  WARN_ON(pdev == NULL);
-  if (pdev == NULL)
+  if (WARN_ON(pdev == NULL))
     return -EINVAL;
 
   info = dev_get_drvdata(&pdev->dev);
