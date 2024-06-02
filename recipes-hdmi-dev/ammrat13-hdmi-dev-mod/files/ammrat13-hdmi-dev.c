@@ -138,6 +138,30 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
   return 0;
 }
 
+static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info) {
+  // TODO
+  return 0;
+}
+
+static int hdmi_set_par(struct fb_info *info) {
+  // We don't have any parameters to set, so this function is effectively a
+  // no-op. Still, we use this opportunity to check that the `var` we're
+  // expected to set is good.
+  struct fb_var_screeninfo new_var;
+  int res;
+
+  pr_info("called set_par on %p\n", info);
+  WARN_ON(info == NULL);
+  if (info == NULL)
+    return 1;
+
+  new_var = info->var;
+  new_var.activate = FB_ACTIVATE_TEST;
+  WARN_ON(hdmi_check_var(&new_var, info) != 0);
+
+  return 0;
+}
+
 // -----------------------------------------------------------------------------
 // Framebuffer Structures
 
@@ -185,12 +209,23 @@ static struct fb_var_screeninfo hdmi_var_init = {
 
 static struct fb_ops hdmi_fbops = {
     .owner = THIS_MODULE,
+    /* .fb_open is uneeded because we don't do user multiplexing */
+    /* .fb_release is uneeded because we don't do user multiplexing */
     .fb_read = fb_sys_read,
     .fb_write = fb_sys_write,
+    .fb_check_var = hdmi_check_var,
+    .fb_set_par = hdmi_set_par,
     .fb_setcolreg = hdmi_setcolreg,
+    /* .fb_setcmap iteratively calls .fb_setcolreg by default */
+    /* .fb_blank errors by default */
+    /* .fb_pan_display errors by default */
     .fb_fillrect = cfb_fillrect,
     .fb_copyarea = cfb_copyarea,
     .fb_imageblit = cfb_imageblit,
+    /* .fb_cursor uses a software cursor by default */
+    /* .fb_sync is a no-op by default */
+    /* .fb_mmap maps as an IO space by default */
+    /* .fb_destroy does nothing special by default */
 };
 
 // -----------------------------------------------------------------------------
@@ -245,14 +280,11 @@ static int hdmi_probe_alloc_buffer(struct platform_device *pdev,
   // The buffer doesn't have to be physically contiguous in memory, as long as
   // its contiguous in bus memory. The kernel will use the IOMMU to ensure this,
   // or it will allocate it contiguously.
-  //
-  // This function also specifies the properties of the buffer. We allow write
-  // coalescing via a store buffer.
   void *vir_addr;
   dma_addr_t bus_addr;
 
-  vir_addr = dmam_alloc_attrs(&pdev->dev, HDMI_BUF_LEN, &bus_addr, GFP_KERNEL,
-                              DMA_ATTR_WRITE_COMBINE);
+  vir_addr =
+      dmam_alloc_attrs(&pdev->dev, HDMI_BUF_LEN, &bus_addr, GFP_KERNEL, 0);
   if (!vir_addr) {
     pr_err("failed to allocate buffer\n");
     return -ENOMEM;
