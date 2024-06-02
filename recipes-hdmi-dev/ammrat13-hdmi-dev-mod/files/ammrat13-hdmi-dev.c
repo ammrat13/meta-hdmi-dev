@@ -98,6 +98,13 @@ static irqreturn_t hdmi_isr(int irq, void *info_cookie) {
 // -----------------------------------------------------------------------------
 // Framebuffer Operations
 
+static unsigned hdmi_setcolreg_cvtcolor(unsigned x) {
+  // Helper function to convert a 16-bit color value to an 8-bit color value.
+  // Everywhere else in the kernel uses 16-bit values, so we're forced to
+  // convert.
+  return ((x + 0x80u) >> 8);
+}
+
 static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
                           unsigned blue, unsigned transp,
                           struct fb_info *info) {
@@ -109,14 +116,11 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
   if (info == NULL)
     return 1;
 
-  // The inputs to this function are 16-bit values. Convert them to the expected
-  // 8-bit values.
-#define CVT_COLOR(x) (((x) + 0x80u) >> 8)
-  red = CVT_COLOR(red);
-  green = CVT_COLOR(green);
-  blue = CVT_COLOR(blue);
-  transp = CVT_COLOR(transp);
-#undef CVT_COLOR
+  // The inputs to this function are 16-bit, so convert to 8-bit
+  red = hdmi_setcolreg_cvtcolor(red);
+  green = hdmi_setcolreg_cvtcolor(green);
+  blue = hdmi_setcolreg_cvtcolor(blue);
+  transp = hdmi_setcolreg_cvtcolor(transp);
 
   pr_info("setting color register %u to (%u, %u, %u, %u)\n", regno, red, green,
           blue, transp);
