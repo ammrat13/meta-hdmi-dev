@@ -151,7 +151,15 @@ static unsigned hdmi_setcolreg_cvtcolor(unsigned x) {
   // Helper function to convert a 16-bit color value to an 8-bit color value.
   // Everywhere else in the kernel uses 16-bit values, so we're forced to
   // convert.
-  return ((x + 0x80u) >> 8);
+  //
+  // The conversion here isn't just a simple divide by 256, though that would
+  // work. The actual ratio is (2**16 - 1) / (2**8 - 1). The formula below is
+  // used elsewhere in the kernel to get the exact answer for that ratio.
+  if (x > 0xffffu) {
+    pr_warn("value %u is out of range\n", x);
+    x = 0xffffu;
+  }
+  return ((x << 8) + 0x7fffu - x) >> 16;
 }
 
 static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
@@ -180,7 +188,7 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
 
   // The fields here MUST match what's set in `info->var`
   ((u32 *)info->pseudo_palette)[regno] =
-      ((red & 0xff) << 16) | ((green & 0xff) << 8) | ((blue & 0xff) << 0);
+      (red << 16) | (green << 8) | (blue << 0);
   return 0;
 }
 
