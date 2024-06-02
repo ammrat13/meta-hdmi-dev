@@ -108,10 +108,19 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
   WARN_ON(info == NULL);
   if (info == NULL)
     return 1;
-  BUG_ON(info->pseudo_palette == NULL);
 
-  pr_info("setting color register %d to %02x%02x%02x%02x\n", regno, red, green,
+  // The inputs to this function are 16-bit values. Convert them to the expected
+  // 8-bit values.
+#define CVT_COLOR(x) (((x) + 0x80u) >> 8)
+  red = CVT_COLOR(red);
+  green = CVT_COLOR(green);
+  blue = CVT_COLOR(blue);
+  transp = CVT_COLOR(transp);
+#undef CVT_COLOR
+
+  pr_info("setting color register %u to (%u, %u, %u, %u)\n", regno, red, green,
           blue, transp);
+  BUG_ON(info->pseudo_palette == NULL);
 
   // The pseudo palette is expected to be 16 entries long, and that's exactly
   // what we allocated
