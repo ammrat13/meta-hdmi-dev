@@ -33,6 +33,7 @@ static const u32 HDMI_VBLANK_IRQ = 0x02ul;
 static void hdmi_assert_types(void) {
   BUILD_BUG_ON(sizeof(u8) != 1);
   BUILD_BUG_ON(sizeof(u32) != 4);
+  BUILD_BUG_ON(sizeof(unsigned) <= 2);
   BUILD_BUG_ON(sizeof(unsigned long) != sizeof(u32));
   BUILD_BUG_ON(sizeof(void *) != sizeof(unsigned long));
   BUILD_BUG_ON(sizeof(void __iomem *) != sizeof(unsigned long));
@@ -69,7 +70,41 @@ static u32 hdmi_ioread32(struct fb_info *info, off_t off) {
 }
 
 // -----------------------------------------------------------------------------
+// Coordinate and VBlank Handling
+
+struct hdmi_coordinate {
+  unsigned fid;
+  unsigned row;
+  unsigned col;
+};
+
+static struct hdmi_coordinate hdmi_coordinate_read(struct fb_info *info) {
+  struct hdmi_coordinate ret;
+  u32 data;
+  hdmi_assert_init(info);
+  // Spin until the data is actually valid. This shouldn't take long - just a
+  // few cycles.
+  while ((hdmi_ioread32(info, HDMI_COORD_CTRL_OFF) & 1u) == 0u)
+    ;
+  // Read and decode the data
+  data = hdmi_ioread32(info, HDMI_COORD_DATA_OFF);
+  ret.fid = (data >> 20) & 0xfffu;
+  ret.row = (data >> 10) & 0x3ffu;
+  ret.col = (data >> 0) & 0x3ffu;
+  return ret;
+}
+
+static bool hdmi_coordinate_is_vblank(struct hdmi_coordinate coord) {
+  return coord.row < 45u;
+}
+
+// -----------------------------------------------------------------------------
 // Interrupt Handling
+
+// This wait queue is signaled on every VBlank by the ISR. All the threads
+// waiting on this MUST be interruptible, especially since it takes a long time
+// for the interrupts to come in.
+DECLARE_WAIT_QUEUE_HEAD(hdmi_vblank_waitq);
 
 static irqreturn_t hdmi_isr(int irq, void *info_cookie) {
   struct fb_info *info;
@@ -81,7 +116,7 @@ static irqreturn_t hdmi_isr(int irq, void *info_cookie) {
   hdmi_assert_init(info);
 
   // Check to see if we even have an interrupt from this device
-  if ((hdmi_ioread32(info, HDMI_CTRL_OFF) & 0x200) == 0)
+  if ((hdmi_ioread32(info, HDMI_CTRL_OFF) & 0x200u) == 0u)
     return IRQ_NONE;
   // If we do, read the Interrupt Status Register to find out what interrupts
   // we need to service. We should only have an interrupt for a new frame.
@@ -89,10 +124,7 @@ static irqreturn_t hdmi_isr(int irq, void *info_cookie) {
   BUG_ON(isr == 0);
   WARN_ON_ONCE(isr != HDMI_VBLANK_IRQ);
 
-  // At this point, we'd do whatever we need to do to service the interrupt,
-  // which is fired on every frame. But, we don't do any double buffering, so we
-  // don't need to do anything here. Just acknowledge all the interrupts so we
-  // don't get called again, then return.
+  wake_up_interruptible_all(&hdmi_vblank_waitq);
   hdmi_iowrite32(info, HDMI_ISR_OFF, isr);
   return IRQ_HANDLED;
 }
@@ -168,8 +200,6 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
   // For true-color mode, the kernel expects us to allocate and manage a pseudo
   // palette. This is the function the kernel uses to set entries in that. We
   // allocated it in the probe function.
-  if (WARN_ON(info == NULL))
-    return 1;
 
   // The inputs to this function are 16-bit, so convert to 8-bit
   red = hdmi_setcolreg_cvtcolor(red);
@@ -178,12 +208,14 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
   transp = hdmi_setcolreg_cvtcolor(transp);
 
 #if 0
-  // This has a tendancy to spam the log, so we disable it
+  // This has a tendancy to spam the log, so we disable it. The checks should
+  // still happen after the print, though.
   pr_debug("setting color register %u to (%u, %u, %u, %u)\n", regno, red, green,
         blue, transp);
 #endif
-
-  BUG_ON(info->pseudo_palette == NULL);
+  if (WARN_ON(info == NULL))
+    return 1;
+  hdmi_assert_init(info);
 
   // The pseudo palette is expected to be 16 entries long, and that's exactly
   // what we allocated
@@ -201,9 +233,10 @@ static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info) {
   // only supports one configuration, though. So, we check if the thing passed
   // in is close enough, modifying it if it is and erroring otherwise.
 
+  pr_info("called check_var for %p on %p\n", var, info);
   if (WARN_ON(var == NULL || info == NULL))
     return -EINVAL;
-  pr_info("called check_var for %p on %p\n", var, info);
+  hdmi_assert_init(info);
 
   // It appears that we're responsible for rounding up impossible values
   if (var->xres_virtual < var->xres)
@@ -270,6 +303,7 @@ static int hdmi_mmap(struct fb_info *info, struct vm_area_struct *vma) {
   // By default, the framebuffer is treated as IO memory, but we want a weak
   // memory ordering.
   pr_info("called mmap for %p on %p\n", vma, info);
+  hdmi_assert_init(info);
   return dma_mmap_attrs(info->dev, vma, info->screen_base, info->fix.smem_start,
                         info->fix.smem_len, DMA_ATTR_WRITE_COMBINE);
 }
@@ -462,6 +496,8 @@ static int hdmi_probe(struct platform_device *pdev) {
   // Enable interrupts on VBlank
   hdmi_iowrite32(info, HDMI_GIE_OFF, 0x01ul);
   hdmi_iowrite32(info, HDMI_IER_OFF, HDMI_VBLANK_IRQ);
+  // Clear the coordinate valid bit from the previous run (if any)
+  hdmi_ioread32(info, HDMI_COORD_CTRL_OFF);
   // Start the device
   hdmi_iowrite32(info, HDMI_CTRL_OFF, 0x081ul);
 
