@@ -26,9 +26,9 @@ static const size_t HDMI_MMIO_LEN = 0x20ul;
 static const size_t HDMI_BUF_LEN = 640ul * 480ul * 4ul;
 static const size_t HDMI_LINE_LEN = 640ul * 4ul;
 
-// Bitmask for an interrupt that's fired at the start of every frame. It's the
-// mask into the Interrupt Status Register and the Interrupt Enable Register.
-static const u32 HDMI_FRAMEIRQ = 0x02ul;
+// Bitmask for an interrupt that's fired on every VBlank. It's the mask into the
+// Interrupt Status Register and the Interrupt Enable Register.
+static const u32 HDMI_VBLANK_IRQ = 0x02ul;
 
 static void hdmi_assert_types(void) {
   BUILD_BUG_ON(sizeof(u8) != 1);
@@ -87,7 +87,7 @@ static irqreturn_t hdmi_isr(int irq, void *info_cookie) {
   // we need to service. We should only have an interrupt for a new frame.
   isr = hdmi_ioread32(info, HDMI_ISR_OFF);
   BUG_ON(isr == 0);
-  WARN_ON_ONCE(isr != HDMI_FRAMEIRQ);
+  WARN_ON_ONCE(isr != HDMI_VBLANK_IRQ);
 
   // At this point, we'd do whatever we need to do to service the interrupt,
   // which is fired on every frame. But, we don't do any double buffering, so we
@@ -459,9 +459,9 @@ static int hdmi_probe(struct platform_device *pdev) {
 
   // Tell the device the buffer address
   hdmi_iowrite32(info, HDMI_BUF_OFF, info->fix.smem_start);
-  // Enable interrupts
+  // Enable interrupts on VBlank
   hdmi_iowrite32(info, HDMI_GIE_OFF, 0x01ul);
-  hdmi_iowrite32(info, HDMI_IER_OFF, HDMI_FRAMEIRQ);
+  hdmi_iowrite32(info, HDMI_IER_OFF, HDMI_VBLANK_IRQ);
   // Start the device
   hdmi_iowrite32(info, HDMI_CTRL_OFF, 0x081ul);
 
