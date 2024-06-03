@@ -298,6 +298,24 @@ static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info) {
   return 0;
 }
 
+#ifdef DEBUG
+static int hdmi_set_par(struct fb_info *info) {
+  // The default for this function is a no-op, which makes sense for us since we
+  // have no hardware to configure. However, we'll use this opportunity to do an
+  // extra test. We should never try to set the hardware to a state that
+  // wouldn't pass `check_var`.
+  struct fb_var_screeninfo new_var;
+
+  pr_info("called set_par on %p\n", info);
+  if (WARN_ON(info == NULL))
+    return 1;
+  hdmi_assert_init(info);
+
+  new_var = info->var;
+  return hdmi_check_var(&new_var, info) != 0;
+}
+#endif /* defined(DEBUG) */
+
 static int hdmi_mmap(struct fb_info *info, struct vm_area_struct *vma) {
   // This function is used to map the framebuffer into the user's address space.
   // By default, the framebuffer is treated as IO memory, but we want a weak
@@ -315,7 +333,9 @@ static struct fb_ops hdmi_fbops = {
     .fb_read = fb_sys_read,
     .fb_write = fb_sys_write,
     .fb_check_var = hdmi_check_var,
-    /* .fb_set_par doesn't matter since the hardware isn't configurable */
+#ifdef DEBUG
+    .fb_set_par = hdmi_set_par,
+#endif
     .fb_setcolreg = hdmi_setcolreg,
     /* .fb_setcmap iteratively calls .fb_setcolreg by default */
     /* .fb_blank errors by default */
