@@ -177,8 +177,12 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
   blue = hdmi_setcolreg_cvtcolor(blue);
   transp = hdmi_setcolreg_cvtcolor(transp);
 
+#if 0
+  // This has a tendancy to spam the log, so we disable it
   pr_debug("setting color register %u to (%u, %u, %u, %u)\n", regno, red, green,
-           blue, transp);
+        blue, transp);
+#endif
+
   BUG_ON(info->pseudo_palette == NULL);
 
   // The pseudo palette is expected to be 16 entries long, and that's exactly
@@ -199,7 +203,7 @@ static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info) {
 
   if (WARN_ON(var == NULL || info == NULL))
     return -EINVAL;
-  pr_debug("called check_var for %p on %p\n", var, info);
+  pr_info("called check_var for %p on %p\n", var, info);
 
   // It appears that we're responsible for rounding up impossible values
   if (var->xres_virtual < var->xres)
@@ -209,27 +213,27 @@ static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info) {
 
   // The resolution is fixed by the hardware, ...
   if (var->xres != 640 || var->yres != 480) {
-    pr_debug("-> resolution mismatch\n");
+    pr_info("-> resolution mismatch\n");
     return -EINVAL;
   }
   // ... as is the virtual resolution, ...
   if (var->xres_virtual != 640 || var->yres_virtual != 480) {
-    pr_debug("-> virtual resolution mismatch\n");
+    pr_info("-> virtual resolution mismatch\n");
     return -EINVAL;
   }
   // ... the buffer structure, ...
   if ((var->vmode & FB_VMODE_MASK) != FB_VMODE_NONINTERLACED) {
-    pr_debug("-> incorrect buffer structure\n");
+    pr_info("-> incorrect buffer structure\n");
     return -EINVAL;
   }
   // ... and the color depth.
   if (var->bits_per_pixel != 32 || var->grayscale != 0) {
-    pr_debug("-> color depth mismatch\n");
+    pr_info("-> color depth mismatch\n");
     return -EINVAL;
   }
   // We don't support hardware panning.
   if (var->xoffset != 0 || var->yoffset != 0) {
-    pr_debug("-> panning not supported\n");
+    pr_info("-> panning not supported\n");
     return -EINVAL;
   }
 
@@ -261,6 +265,15 @@ static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info) {
   return 0;
 }
 
+static int hdmi_mmap(struct fb_info *info, struct vm_area_struct *vma) {
+  // This function is used to map the framebuffer into the user's address space.
+  // By default, the framebuffer is treated as IO memory, but we want a weak
+  // memory ordering.
+  pr_info("called mmap for %p on %p\n", vma, info);
+  return dma_mmap_attrs(info->dev, vma, info->screen_base, info->fix.smem_start,
+                        info->fix.smem_len, DMA_ATTR_WRITE_COMBINE);
+}
+
 static struct fb_ops hdmi_fbops = {
     .owner = THIS_MODULE,
     /* .fb_open is uneeded because we don't do user multiplexing */
@@ -278,7 +291,7 @@ static struct fb_ops hdmi_fbops = {
     .fb_imageblit = cfb_imageblit,
     /* .fb_cursor uses a software cursor by default */
     /* .fb_sync is a no-op by default */
-    /* .fb_mmap maps as an IO space by default */
+    .fb_mmap = hdmi_mmap,
     /* .fb_destroy does nothing special by default */
 };
 
@@ -334,11 +347,15 @@ static int hdmi_probe_alloc_buffer(struct platform_device *pdev,
   // The buffer doesn't have to be physically contiguous in memory, as long as
   // its contiguous in bus memory. The kernel will use the IOMMU to ensure this,
   // or it will allocate it contiguously.
+  //
+  // Finally, we allow store buffer optimizations on the buffer. Really, we can
+  // go down to a weak memory ordering since it's write only, but that's
+  // actually not implemented on ARM.
   void *vir_addr;
   dma_addr_t bus_addr;
 
-  vir_addr =
-      dmam_alloc_attrs(&pdev->dev, HDMI_BUF_LEN, &bus_addr, GFP_KERNEL, 0);
+  vir_addr = dmam_alloc_attrs(&pdev->dev, HDMI_BUF_LEN, &bus_addr, GFP_KERNEL,
+                              DMA_ATTR_WRITE_COMBINE);
   if (!vir_addr) {
     pr_err("failed to allocate buffer\n");
     return -ENOMEM;
