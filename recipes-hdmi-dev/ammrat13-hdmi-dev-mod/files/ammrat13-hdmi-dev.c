@@ -11,8 +11,9 @@
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
-// -----------------------------------------------------------------------------
-// Constants and Helper Functions
+/*******************************************************************************
+ * Constants and Helper Functions
+ ******************************************************************************/
 
 static const off_t HDMI_CTRL_OFF = 0x00l;
 static const off_t HDMI_GIE_OFF = 0x04l;
@@ -26,8 +27,10 @@ static const size_t HDMI_MMIO_LEN = 0x20ul;
 static const size_t HDMI_BUF_LEN = 640ul * 480ul * 4ul;
 static const size_t HDMI_LINE_LEN = 640ul * 4ul;
 
-// Bitmask for an interrupt that's fired on every VBlank. It's the mask into the
-// Interrupt Status Register and the Interrupt Enable Register.
+/*
+ * Bitmask for an interrupt that's fired on every VBlank. It's the mask into the
+ * Interrupt Status Register and the Interrupt Enable Register.
+ */
 static const u32 HDMI_VBLANK_IRQ = 0x02ul;
 
 static void hdmi_assert_types(void)
@@ -74,13 +77,20 @@ static u32 hdmi_ioread32(struct fb_info *info, off_t off)
 	return ioread32((void __iomem *)(info->fix.mmio_start + off));
 }
 
-// -----------------------------------------------------------------------------
-// Coordinate and VBlank Handling
+/*******************************************************************************
+ * Coordinate and VBlank Handling
+ ******************************************************************************/
 
+/*
+ * This is the internal representation of coordinates, which isn't necessarily
+ * tied to hardware.
+ *
+ * TODO: It might be good to expose this to user-space for VSync
+ */
 struct hdmi_coordinate {
-	unsigned fid;
-	unsigned row;
-	unsigned col;
+	u32 fid;
+	u32 row;
+	u32 col;
 };
 
 static struct hdmi_coordinate hdmi_coordinate_read(struct fb_info *info)
@@ -88,8 +98,8 @@ static struct hdmi_coordinate hdmi_coordinate_read(struct fb_info *info)
 	struct hdmi_coordinate ret;
 	u32 data;
 	hdmi_assert_init(info);
-	// Spin until the data is actually valid. This shouldn't take long - just a
-	// few cycles.
+	// Spin until the data is actually valid. This shouldn't take long -
+	// just a few cycles.
 	while ((hdmi_ioread32(info, HDMI_COORD_CTRL_OFF) & 1u) == 0u)
 		;
 	// Read and decode the data
@@ -105,12 +115,15 @@ static bool hdmi_coordinate_is_vblank(struct hdmi_coordinate coord)
 	return coord.row < 45u;
 }
 
-// -----------------------------------------------------------------------------
-// Interrupt Handling
+/*******************************************************************************
+ * Interrupt Handling
+ ******************************************************************************/
 
-// This wait queue is signaled on every VBlank by the ISR. All the threads
-// waiting on this MUST be interruptible, especially since it takes a long time
-// for the interrupts to come in.
+/*
+ * This wait queue is signaled on every VBlank by the ISR. All the threads
+ * waiting on this MUST be interruptible, especially since it takes a long time
+ * for the interrupts to come in.
+ */
 DECLARE_WAIT_QUEUE_HEAD(hdmi_vblank_waitq);
 
 static irqreturn_t hdmi_isr(int irq, void *info_cookie)
@@ -118,8 +131,8 @@ static irqreturn_t hdmi_isr(int irq, void *info_cookie)
 	struct fb_info *info;
 	u32 isr;
 
-	// The routine establishing this IRQ handler MUST pass us the `struct fb_info`
-	// data in the cookie.
+	// The routine establishing this IRQ handler MUST pass us the
+	// `struct fb_info` data in the cookie.
 	info = info_cookie;
 	hdmi_assert_init(info);
 
@@ -137,8 +150,16 @@ static irqreturn_t hdmi_isr(int irq, void *info_cookie)
 	return IRQ_HANDLED;
 }
 
-// -----------------------------------------------------------------------------
-// Framebuffer Structures
+/*******************************************************************************
+ * Framebuffer Structures
+ ******************************************************************************/
+
+static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
+			  unsigned blue, unsigned transp, struct fb_info *info);
+static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info);
+static int hdmi_mmap(struct fb_info *info, struct vm_area_struct *vma);
+
+__maybe_unused static int hdmi_set_par(struct fb_info *info);
 
 static struct fb_fix_screeninfo hdmi_fix_init = {
 	// Still have to set:
@@ -184,50 +205,72 @@ static struct fb_var_screeninfo hdmi_var_init = {
 	.vmode = FB_VMODE_NONINTERLACED,
 };
 
-// -----------------------------------------------------------------------------
-// Framebuffer Operations
+static struct fb_ops hdmi_fbops = {
+	.owner = THIS_MODULE,
+	/* .fb_open is uneeded because we don't do user multiplexing */
+	/* .fb_release is uneeded because we don't do user multiplexing */
+	.fb_read = fb_sys_read,
+	.fb_write = fb_sys_write,
+	.fb_check_var = hdmi_check_var,
+#ifdef DEBUG
+	.fb_set_par = hdmi_set_par,
+#endif
+	.fb_setcolreg = hdmi_setcolreg,
+	/* .fb_setcmap iteratively calls .fb_setcolreg by default */
+	/* .fb_blank errors by default */
+	/* .fb_pan_display errors by default */
+	.fb_fillrect = cfb_fillrect,
+	.fb_copyarea = cfb_copyarea,
+	.fb_imageblit = cfb_imageblit,
+	/* .fb_cursor uses a software cursor by default */
+	/* .fb_sync is a no-op by default */
+	.fb_mmap = hdmi_mmap,
+	/* .fb_destroy does nothing special by default */
+};
 
-static unsigned hdmi_setcolreg_cvtcolor(unsigned x)
-{
-	// Helper function to convert a 16-bit color value to an 8-bit color value.
-	// Everywhere else in the kernel uses 16-bit values, so we're forced to
-	// convert.
-	//
-	// The conversion here isn't just a simple divide by 256, though that would
-	// work. The actual ratio is (2**16 - 1) / (2**8 - 1). The formula below is
-	// used elsewhere in the kernel to get the exact answer for that ratio.
-	if (x > 0xffffu) {
-		pr_warn("value %u is out of range\n", x);
-		x = 0xffffu;
-	}
-	return ((x << 8) + 0x7fffu - x) >> 16;
-}
+/*******************************************************************************
+ * Framebuffer Operations
+ *
+ * Note that these were forward-declared in the previous section. Make sure to
+ * add them there to register them in `hdmi_fbops`.
+ ******************************************************************************/
 
+/*
+ * For true-color mode, the kernel expects us to allocate and manage a pseudo
+ * palette. This is the function the kernel uses to set entries in that. We
+ * allocated it in the probe function.
+ */
 static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
 			  unsigned blue, unsigned transp, struct fb_info *info)
 {
-	// For true-color mode, the kernel expects us to allocate and manage a pseudo
-	// palette. This is the function the kernel uses to set entries in that. We
-	// allocated it in the probe function.
-
-	// The inputs to this function are 16-bit, so convert to 8-bit
-	red = hdmi_setcolreg_cvtcolor(red);
-	green = hdmi_setcolreg_cvtcolor(green);
-	blue = hdmi_setcolreg_cvtcolor(blue);
-	transp = hdmi_setcolreg_cvtcolor(transp);
+	// The inputs to this function are 16-bit, so convert to 8-bit. The
+	// conversion here isn't just a simple divide by 256, though that would
+	// work. The actual ratio is (2**16 - 1) / (2**8 - 1). The formula below
+	// is used elsewhere in the kernel to get the true closest answer for
+	// that ratio.
+	//
+	// Also note that we fix the parameters. Other places in the kernel
+	// dynamically compute values from `info`, but our stuff is always
+	// fixed, so we can just use the fixed values.
+#define CNVT_TOHW(val, width) ((((val) << (width)) + 0x7fff - (val)) >> 16)
+	red = CNVT_TOHW(red, 8);
+	green = CNVT_TOHW(green, 8);
+	blue = CNVT_TOHW(blue, 8);
+	transp = CNVT_TOHW(transp, 8);
+#undef CNVT_TOHW
 
 #if 0
-  // This has a tendancy to spam the log, so we disable it. The checks should
-  // still happen after the print, though.
-  pr_debug("setting color register %u to (%u, %u, %u, %u)\n", regno, red, green,
-        blue, transp);
+	// This has a tendancy to spam the log, so we disable it. The checks
+	// should still happen after the print, though.
+	pr_debug("setting color register %u to (%u, %u, %u, %u)\n", regno, red,
+		 green, blue, transp);
 #endif
 	if (WARN_ON(info == NULL))
 		return 1;
 	hdmi_assert_init(info);
 
-	// The pseudo palette is expected to be 16 entries long, and that's exactly
-	// what we allocated
+	// The pseudo palette is expected to be 16 entries long, and that's
+	// exactly what we allocated
 	if (regno >= 16)
 		return 1;
 
@@ -237,12 +280,13 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
 	return 0;
 }
 
+/*
+ * This function gates user changes to the framebuffer geometry. The hardware
+ * only supports one configuration, though. So, we check if the thing passed
+ * in is close enough, modifying it if it is and erroring otherwise.
+ */
 static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 {
-	// This function gates user changes to the framebuffer geometry. The hardware
-	// only supports one configuration, though. So, we check if the thing passed
-	// in is close enough, modifying it if it is and erroring otherwise.
-
 	pr_info("called check_var for %p on %p\n", var, info);
 	if (WARN_ON(var == NULL || info == NULL))
 		return -EINVAL;
@@ -280,10 +324,10 @@ static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 		return -EINVAL;
 	}
 
-	// If the request is close enough, modify the rest of the fields to match what
-	// we actually have. Note that this doesn't touch:
-	//  * `.activate`
-	//  * `.rotate` since that's handled in software
+	// If the request is close enough, modify the rest of the fields to
+	// match what we actually have. Note that this doesn't touch:
+	//  * `.activate`, nor
+	//  * `.rotate` since that's handled in software.
 	{
 		var->red = hdmi_var_init.red;
 		var->green = hdmi_var_init.green;
@@ -300,21 +344,36 @@ static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 		var->vsync_len = hdmi_var_init.vsync_len;
 		var->sync = hdmi_var_init.sync;
 
-		// The mode field is used both for interlacing and how the console should be
-		// updated. Only update the interlacing bit.
+		// The mode field is used both for interlacing and how the
+		// console should be updated. Only update the interlacing bit.
 		var->vmode = (hdmi_var_init.vmode & FB_VMODE_MASK) |
 			     (var->vmode & ~FB_VMODE_MASK);
 	}
 	return 0;
 }
 
-#ifdef DEBUG
-static int hdmi_set_par(struct fb_info *info)
+/*
+ * This function is used to map the framebuffer into the user's address space.
+ * By default, the framebuffer is treated as IO memory, but we want a weak
+ * memory ordering.
+ */
+static int hdmi_mmap(struct fb_info *info, struct vm_area_struct *vma)
 {
-	// The default for this function is a no-op, which makes sense for us since we
-	// have no hardware to configure. However, we'll use this opportunity to do an
-	// extra test. We should never try to set the hardware to a state that
-	// wouldn't pass `check_var`.
+	pr_info("called mmap for %p on %p\n", vma, info);
+	hdmi_assert_init(info);
+	return dma_mmap_attrs(info->dev, vma, info->screen_base,
+			      info->fix.smem_start, info->fix.smem_len,
+			      DMA_ATTR_WRITE_COMBINE);
+}
+
+/*
+ * The default for this function is a no-op, which makes sense for us since we
+ * have no hardware to configure. However, we'll use this opportunity to do an
+ * extra test. We should never try to set the hardware to a state that wouldn't
+ * pass `check_var`.
+ */
+__maybe_unused static int hdmi_set_par(struct fb_info *info)
+{
 	struct fb_var_screeninfo new_var;
 
 	pr_info("called set_par on %p\n", info);
@@ -325,53 +384,19 @@ static int hdmi_set_par(struct fb_info *info)
 	new_var = info->var;
 	return hdmi_check_var(&new_var, info) != 0;
 }
-#endif /* defined(DEBUG) */
 
-static int hdmi_mmap(struct fb_info *info, struct vm_area_struct *vma)
-{
-	// This function is used to map the framebuffer into the user's address space.
-	// By default, the framebuffer is treated as IO memory, but we want a weak
-	// memory ordering.
-	pr_info("called mmap for %p on %p\n", vma, info);
-	hdmi_assert_init(info);
-	return dma_mmap_attrs(info->dev, vma, info->screen_base,
-			      info->fix.smem_start, info->fix.smem_len,
-			      DMA_ATTR_WRITE_COMBINE);
-}
+/*******************************************************************************
+ * Device Setup and Teardown
+ ******************************************************************************/
 
-static struct fb_ops hdmi_fbops = {
-	.owner = THIS_MODULE,
-	/* .fb_open is uneeded because we don't do user multiplexing */
-	/* .fb_release is uneeded because we don't do user multiplexing */
-	.fb_read = fb_sys_read,
-	.fb_write = fb_sys_write,
-	.fb_check_var = hdmi_check_var,
-#ifdef DEBUG
-	.fb_set_par = hdmi_set_par,
-#endif
-	.fb_setcolreg = hdmi_setcolreg,
-	/* .fb_setcmap iteratively calls .fb_setcolreg by default */
-	/* .fb_blank errors by default */
-	/* .fb_pan_display errors by default */
-	.fb_fillrect = cfb_fillrect,
-	.fb_copyarea = cfb_copyarea,
-	.fb_imageblit = cfb_imageblit,
-	/* .fb_cursor uses a software cursor by default */
-	/* .fb_sync is a no-op by default */
-	.fb_mmap = hdmi_mmap,
-	/* .fb_destroy does nothing special by default */
-};
-
-// -----------------------------------------------------------------------------
-// Device Setup and Teardown
-
+/*
+ * Helper function to allocate a `struct fb_info`. It also initializes the
+ * structure with default/template values. This allocation is unmanaged, and
+ * it is the caller's responsibility to release.
+ */
 static int hdmi_probe_create_fbinfo(struct platform_device *pdev,
 				    struct fb_info **info)
 {
-	// Helper function to allocate a `struct fb_info`. It also initializes the
-	// structure with default/template values. This allocation is unmanaged, and
-	// it is the caller's responsibility to release.
-
 	*info = framebuffer_alloc(0, &pdev->dev);
 	if (*info == NULL) {
 		pr_err("failed to allocate framebuffer device\n");
@@ -388,11 +413,13 @@ static int hdmi_probe_create_fbinfo(struct platform_device *pdev,
 	return 0;
 }
 
+/*
+ * Helper function to map the device registers into our address space. It puts
+ * the virtual address in the `mmio_start` field of the framebuffer info.
+ */
 static int hdmi_probe_map_registers(struct platform_device *pdev,
 				    struct fb_info *info)
 {
-	// Helper function to map the device registers into our address space. It puts
-	// the virtual address in the `mmio_start` field of the framebuffer info.
 	struct resource *res;
 	void __iomem *reg;
 
@@ -408,19 +435,21 @@ static int hdmi_probe_map_registers(struct platform_device *pdev,
 	return 0;
 }
 
+/*
+ * Helper function to allocate the frame buffer in DMA memory. It puts both
+ * the virtual and bus addresses of the buffer into the `struct fb_info`.
+ *
+ * The buffer doesn't have to be physically contiguous in memory, as long as
+ * its contiguous in bus memory. The kernel will use the IOMMU to ensure this,
+ * or it will allocate it contiguously.
+ *
+ * Finally, we allow store buffer optimizations on the buffer. Really, we can
+ * go down to a weak memory ordering since it's write only, but that's
+ * actually not implemented on ARM.
+ */
 static int hdmi_probe_alloc_buffer(struct platform_device *pdev,
 				   struct fb_info *info)
 {
-	// Helper function to allocate the frame buffer in DMA memory. It puts both
-	// the virtual and bus addresses of the buffer into the `struct fb_info`.
-	//
-	// The buffer doesn't have to be physically contiguous in memory, as long as
-	// its contiguous in bus memory. The kernel will use the IOMMU to ensure this,
-	// or it will allocate it contiguously.
-	//
-	// Finally, we allow store buffer optimizations on the buffer. Really, we can
-	// go down to a weak memory ordering since it's write only, but that's
-	// actually not implemented on ARM.
 	void *vir_addr;
 	dma_addr_t bus_addr;
 
@@ -437,11 +466,13 @@ static int hdmi_probe_alloc_buffer(struct platform_device *pdev,
 	return 0;
 }
 
+/*
+ * In true-color mode, the kernel expects us to allocate a pseudo palette. This
+ * maps sixteen colors to their corresponding 32-bit values.
+ */
 static int hdmi_probe_alloc_pseudo_palette(struct platform_device *pdev,
 					   struct fb_info *info)
 {
-	// In true-color mode, the kernel expects us to allocate a pseudo palette.
-	// This maps sixteen colors to their corresponding 32-bit values.
 	u32 *palette;
 
 	palette = devm_kzalloc(&pdev->dev, 16 * sizeof(u32), GFP_KERNEL);
@@ -455,12 +486,14 @@ static int hdmi_probe_alloc_pseudo_palette(struct platform_device *pdev,
 	return 0;
 }
 
+/*
+ * Helper function to request the IRQ for the device. It registers the function
+ * `hdmi_isr`, and passes it the `struct fb_info` as the cookie. Note that
+ * interrupts will not happen until the device is started.
+ */
 static int hdmi_probe_request_irq(struct platform_device *pdev,
 				  struct fb_info *info)
 {
-	// Helper function to request the IRQ for the device. It registers the
-	// function `hdmi_isr`, and passes it the `struct fb_info` as the cookie. Note
-	// that interrupts will not happen until the device is started.
 	int irq;
 	int res;
 
@@ -481,10 +514,12 @@ static int hdmi_probe_request_irq(struct platform_device *pdev,
 	return 0;
 }
 
+/*
+ * Helper function to register the framebuffer device with the kernel. At this
+ * point, the `struct fb_info` MUST be fully initialized.
+ */
 static int hdmi_probe_register_fbinfo(struct fb_info *info)
 {
-	// Helper function to register the framebuffer device with the kernel. At this
-	// point, the `struct fb_info` should be fully initialized.
 	int res;
 	hdmi_assert_init(info);
 
@@ -506,20 +541,20 @@ static int hdmi_probe(struct platform_device *pdev)
 	if (WARN_ON(pdev == NULL))
 		return -EINVAL;
 
-	// The driver data is a `struct fb_info`. The allocation for it is unmanaged.
-	// This is done for two reasons:
+	// The driver data is a `struct fb_info`. The allocation for it is
+	// unmanaged. This is done for two reasons:
 	//   1. We need special handling for registration, and that sort of goes
 	//      hand-in-hand with allocation.
-	//   2. The `devres` subsystem is built on a stack. If we used the `devres`
-	//      subsystem, we'd have to allocate this last to prevent the things it
-	//      references from being freed first.
+	//   2. The `devres` subsystem is built on a stack. If we used the
+	//      `devres` subsystem, we'd have to allocate this last to prevent
+	//      the things it references from being freed first.
 	if ((res = hdmi_probe_create_fbinfo(pdev, &info)) != 0)
 		goto err;
 	BUG_ON(info == NULL);
 
-	// Call all of the initialization functions. These may have dependencies on
-	// each other, so the order in which we call them matters. If any of them
-	// fail, make sure to clean up after them.
+	// Call all of the initialization functions. These may have dependencies
+	// on each other, so the order in which we call them matters. If any of
+	// them fail, make sure to clean up after them.
 	if ((res = hdmi_probe_map_registers(pdev, info)) != 0)
 		goto err;
 	if ((res = hdmi_probe_alloc_buffer(pdev, info)) != 0)
@@ -551,16 +586,17 @@ err:
 
 static int hdmi_remove(struct platform_device *pdev)
 {
-	// When we were probing this device, we did our best to use managed resources.
-	// This means they will be cleaned up automatically when this function
-	// returns. We just have to deal with the non-managed resources.
+	// When we were probing this device, we did our best to use managed
+	// resources. This means they will be cleaned up automatically when this
+	// function returns. We just have to deal with the non-managed
+	// resources, i.e. the `struct fb_info`.
 	//
-	// Also, we know that the device was successfully probed if we made it here.
-	// The `remove` function is not called on probe failure.
+	// Also, we know that the device was successfully probed if we made it
+	// here. The `remove` function is not called on probe failure.
 	//
 	// The mainline kernel says that the return value from this function is
-	// ignored. So, we always return 0. It also means we have to do our own error
-	// handling if needed.
+	// ignored. So, we always return 0. It also means we have to do our own
+	// error handling if needed.
 	struct fb_info *info;
 
 	pr_info("called remove on %p\n", pdev);
@@ -575,6 +611,9 @@ static int hdmi_remove(struct platform_device *pdev)
 	// Disable interrupts for the next guy
 	hdmi_iowrite32(info, HDMI_GIE_OFF, 0x00ul);
 	hdmi_iowrite32(info, HDMI_IER_OFF, 0x00ul);
+	// Clear the coordinate valid bit from this run. Not strictly necessary,
+	// but just in case.
+	hdmi_ioread32(info, HDMI_COORD_CTRL_OFF);
 	// Note that we keep the buffer address in the device. The next driver should
 	// treat it as garbage, but it will allocate a new one.
 
@@ -590,8 +629,9 @@ static int hdmi_remove(struct platform_device *pdev)
 	return 0;
 }
 
-// -----------------------------------------------------------------------------
-// Module Registration
+/*******************************************************************************
+ * Module Registration
+ ******************************************************************************/
 
 static struct of_device_id hdmi_match[] = {
 	// Names for the `.compatible`` field are taken from the final device tree
