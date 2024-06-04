@@ -1,3 +1,4 @@
+#include <asm-generic/errno.h>
 #define pr_fmt(fmt) "ammrat13-hdmi-dev: " fmt
 #define DEBUG
 
@@ -8,6 +9,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/fb.h>
 #include <linux/interrupt.h>
+#include <linux/jiffies.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
@@ -88,13 +90,11 @@ static u32 hdmi_ioread32(struct fb_info *info, off_t off)
 /*
  * This is the internal representation of coordinates, which isn't necessarily
  * tied to hardware.
- *
- * TODO: It might be good to expose this to user-space for VSync
  */
 struct hdmi_coordinate {
-	u32 fid;
-	u32 row;
-	u32 col;
+	unsigned fid;
+	unsigned row;
+	unsigned col;
 };
 
 static struct hdmi_coordinate hdmi_coordinate_read(struct fb_info *info)
@@ -117,6 +117,11 @@ static struct hdmi_coordinate hdmi_coordinate_read(struct fb_info *info)
 static bool hdmi_coordinate_is_vblank(struct hdmi_coordinate coord)
 {
 	return coord.row < 45u;
+}
+
+static bool hdmi_in_vblank(struct fb_info *info)
+{
+	return hdmi_coordinate_is_vblank(hdmi_coordinate_read(info));
 }
 
 /*******************************************************************************
@@ -162,6 +167,8 @@ static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
 			  unsigned blue, unsigned transp, struct fb_info *info);
 static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info);
 static int hdmi_mmap(struct fb_info *info, struct vm_area_struct *vma);
+static int hdmi_ioctl(struct fb_info *info, unsigned int cmd,
+		      unsigned long arg);
 
 __maybe_unused static int hdmi_set_par(struct fb_info *info);
 
@@ -230,6 +237,7 @@ static struct fb_ops hdmi_fbops = {
 	.fb_imageblit = cfb_imageblit,
 	/* .fb_cursor uses a software cursor by default */
 	/* .fb_sync is a no-op by default */
+	.fb_ioctl = hdmi_ioctl,
 	.fb_mmap = hdmi_mmap,
 	/* .fb_destroy does nothing special by default */
 };
@@ -370,10 +378,53 @@ static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 static int hdmi_mmap(struct fb_info *info, struct vm_area_struct *vma)
 {
 	pr_info("called mmap for %p on %p\n", vma, info);
+	if (WARN_ON(info == NULL))
+		return -EINVAL;
 	hdmi_assert_init(info);
+
 	return dma_mmap_attrs(info->dev, vma, info->screen_base,
 			      info->fix.smem_start, info->fix.smem_len,
 			      DMA_ATTR_WRITE_COMBINE);
+}
+
+/*
+ * We support VBlanks, and we should try to expose that to user-space. It seems
+ * the way this is usually done is through ioctls, specifically `FBIOGET_VBLANK`
+ * and `FBIO_WAITFORVSYNC`. We implement both.
+ */
+static int hdmi_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
+{
+	if (WARN_ON(info == NULL))
+		return -EINVAL;
+	hdmi_assert_init(info);
+
+	switch (cmd) {
+
+	case FBIOGET_VBLANK: {
+		return -ENOTTY;
+	}
+
+	case FBIO_WAITFORVSYNC: {
+		int res;
+#if 0
+		// This causes log spam, so we disable it
+		pr_debug("called ioctl(FBIO_WAITFORVSYNC) on %p\n", info);
+#endif
+		// Each frame is just under 17ms. We give a 20% margin. If we
+		// don't hear back by then, something is wrong.
+		res = wait_event_interruptible_timeout(hdmi_vblank_waitq,
+						       hdmi_in_vblank(info),
+						       msecs_to_jiffies(20));
+		if (res == -ERESTARTSYS)
+			return -EINTR;
+		return WARN_ON(res == 0) ? -ETIMEDOUT : 0;
+	}
+
+	default: {
+		pr_info("called unsupported ioctl(%u) on %p\n", cmd, info);
+		return -ENOTTY;
+	}
+	}
 }
 
 /*
