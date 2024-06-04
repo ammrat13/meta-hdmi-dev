@@ -1,16 +1,18 @@
 #define pr_fmt(fmt) "ammrat13-hdmi-dev: " fmt
 #define DEBUG
 
-#include <linux/module.h>
-
 #include <asm/io.h>
+#include <linux/module.h>
+#include <linux/mod_devicetable.h>
+
 #include <linux/device/driver.h>
+#include <linux/platform_device.h>
+
 #include <linux/dma-mapping.h>
 #include <linux/fb.h>
+
 #include <linux/interrupt.h>
 #include <linux/jiffies.h>
-#include <linux/mod_devicetable.h>
-#include <linux/platform_device.h>
 
 /*******************************************************************************
  * Constants and Helper Functions
