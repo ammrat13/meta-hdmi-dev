@@ -46,6 +46,7 @@ static void hdmi_assert_types(void)
 
 static void hdmi_assert_init(struct fb_info *info)
 {
+#ifdef DEBUG
 	BUG_ON(info == NULL);
 	BUG_ON(info->fix.mmio_start == 0ul);
 	BUG_ON(info->fix.mmio_len != HDMI_MMIO_LEN);
@@ -55,12 +56,15 @@ static void hdmi_assert_init(struct fb_info *info)
 	BUG_ON(info->screen_size != HDMI_BUF_LEN);
 	BUG_ON(info->pseudo_palette == NULL);
 	BUG_ON(info->fbops == NULL);
+#endif /* DEBUG */
 }
 
 static void hdmi_assert_inbounds(off_t off)
 {
+#ifdef DEBUG
 	BUG_ON(off < 0 || off >= HDMI_MMIO_LEN);
 	BUG_ON(off % sizeof(u32) != 0);
+#endif /* DEBUG */
 }
 
 static void hdmi_iowrite32(struct fb_info *info, off_t off, u32 val)
@@ -162,9 +166,11 @@ static int hdmi_mmap(struct fb_info *info, struct vm_area_struct *vma);
 __maybe_unused static int hdmi_set_par(struct fb_info *info);
 
 static struct fb_fix_screeninfo hdmi_fix_init = {
-	// Still have to set:
-	//   * `.smem_start`
-	//   * `.mmio_start`
+	/*
+	 * Still have to set:
+	 *   * `.smem_start`
+	 *   * `.mmio_start`
+	 */
 	.id = "ammrat13-fb",
 	.smem_len = HDMI_BUF_LEN,
 	.type = FB_TYPE_PACKED_PIXELS,
@@ -243,15 +249,17 @@ static struct fb_ops hdmi_fbops = {
 static int hdmi_setcolreg(unsigned regno, unsigned red, unsigned green,
 			  unsigned blue, unsigned transp, struct fb_info *info)
 {
-	// The inputs to this function are 16-bit, so convert to 8-bit. The
-	// conversion here isn't just a simple divide by 256, though that would
-	// work. The actual ratio is (2**16 - 1) / (2**8 - 1). The formula below
-	// is used elsewhere in the kernel to get the true closest answer for
-	// that ratio.
-	//
-	// Also note that we fix the parameters. Other places in the kernel
-	// dynamically compute values from `info`, but our stuff is always
-	// fixed, so we can just use the fixed values.
+	/*
+	 * The inputs to this function are 16-bit, so convert to 8-bit. The
+	 * conversion here isn't just a simple divide by 256, though that would
+	 * work. The actual ratio is (2**16 - 1) / (2**8 - 1). The formula below
+	 * is used elsewhere in the kernel to get the true closest answer for
+	 * that ratio.
+	 *
+	 * Also note that we fix the parameters. Other places in the kernel
+	 * dynamically compute values from `info`, but our stuff is always
+	 * fixed, so we can just use the fixed values.
+	 */
 #define CNVT_TOHW(val, width) ((((val) << (width)) + 0x7fff - (val)) >> 16)
 	red = CNVT_TOHW(red, 8);
 	green = CNVT_TOHW(green, 8);
@@ -324,10 +332,12 @@ static int hdmi_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 		return -EINVAL;
 	}
 
-	// If the request is close enough, modify the rest of the fields to
-	// match what we actually have. Note that this doesn't touch:
-	//  * `.activate`, nor
-	//  * `.rotate` since that's handled in software.
+	/*
+	 * If the request is close enough, modify the rest of the fields to
+	 * match what we actually have. Note that this doesn't touch:
+	 *  * `.activate`, nor
+	 *  * `.rotate` since that's handled in software.
+	 */
 	{
 		var->red = hdmi_var_init.red;
 		var->green = hdmi_var_init.green;
@@ -403,8 +413,10 @@ static int hdmi_probe_create_fbinfo(struct platform_device *pdev,
 		return -ENOMEM;
 	}
 
-	// Still need to set:
-	//   * `.screen_base`
+	/*
+	 * Still need to set:
+	 *   * `.screen_base`
+	 */
 	pr_info("allocated framebuffer device @ %p\n", *info);
 	(*info)->fix = hdmi_fix_init;
 	(*info)->var = hdmi_var_init;
@@ -541,20 +553,24 @@ static int hdmi_probe(struct platform_device *pdev)
 	if (WARN_ON(pdev == NULL))
 		return -EINVAL;
 
-	// The driver data is a `struct fb_info`. The allocation for it is
-	// unmanaged. This is done for two reasons:
-	//   1. We need special handling for registration, and that sort of goes
-	//      hand-in-hand with allocation.
-	//   2. The `devres` subsystem is built on a stack. If we used the
-	//      `devres` subsystem, we'd have to allocate this last to prevent
-	//      the things it references from being freed first.
+	/*
+	 * The driver data is a `struct fb_info`. The allocation for it is
+	 * unmanaged. This is done for two reasons:
+	 *   1. We need special handling for registration, and that sort of goes
+	 *      hand-in-hand with allocation.
+	 *   2. The `devres` subsystem is built on a stack. If we used the
+	 *      `devres` subsystem, we'd have to allocate this last to prevent
+	 *      the things it references from being freed first.
+	 */
 	if ((res = hdmi_probe_create_fbinfo(pdev, &info)) != 0)
 		goto err;
 	BUG_ON(info == NULL);
 
-	// Call all of the initialization functions. These may have dependencies
-	// on each other, so the order in which we call them matters. If any of
-	// them fail, make sure to clean up after them.
+	/*
+	 * Call all of the initialization functions. These may have dependencies
+	 * on each other, so the order in which we call them matters. If any of
+	 * them fail, make sure to clean up after them.
+	 */
 	if ((res = hdmi_probe_map_registers(pdev, info)) != 0)
 		goto err;
 	if ((res = hdmi_probe_alloc_buffer(pdev, info)) != 0)
@@ -586,17 +602,19 @@ err:
 
 static int hdmi_remove(struct platform_device *pdev)
 {
-	// When we were probing this device, we did our best to use managed
-	// resources. This means they will be cleaned up automatically when this
-	// function returns. We just have to deal with the non-managed
-	// resources, i.e. the `struct fb_info`.
-	//
-	// Also, we know that the device was successfully probed if we made it
-	// here. The `remove` function is not called on probe failure.
-	//
-	// The mainline kernel says that the return value from this function is
-	// ignored. So, we always return 0. It also means we have to do our own
-	// error handling if needed.
+	/*
+	 * When we were probing this device, we did our best to use managed
+	 * resources. This means they will be cleaned up automatically when this
+	 * function returns. We just have to deal with the non-managed
+	 * resources, i.e. the `struct fb_info`.
+	 *
+	 * Also, we know that the device was successfully probed if we made it
+	 * here. The `remove` function is not called on probe failure.
+	 *
+	 * The mainline kernel says that the return value from this function is
+	 * ignored. So, we always return 0. It also means we have to do our own
+	 * error handling if needed.
+	 */
 	struct fb_info *info;
 
 	pr_info("called remove on %p\n", pdev);
