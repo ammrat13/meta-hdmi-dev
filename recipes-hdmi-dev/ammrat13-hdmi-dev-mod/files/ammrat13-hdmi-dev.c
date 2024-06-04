@@ -1,4 +1,3 @@
-#include <asm-generic/errno.h>
 #define pr_fmt(fmt) "ammrat13-hdmi-dev: " fmt
 #define DEBUG
 
@@ -89,7 +88,7 @@ static u32 hdmi_ioread32(struct fb_info *info, off_t off)
 
 /*
  * This is the internal representation of coordinates, which isn't necessarily
- * tied to hardware.
+ * tied to hardware. It eventually gets turned into a `struct fb_vblank`.
  */
 struct hdmi_coordinate {
 	unsigned fid;
@@ -119,9 +118,14 @@ static bool hdmi_coordinate_is_vblank(struct hdmi_coordinate coord)
 	return coord.row < 45u;
 }
 
-static bool hdmi_in_vblank(struct fb_info *info)
+static bool hdmi_coordinate_is_hblank(struct hdmi_coordinate coord)
 {
-	return hdmi_coordinate_is_vblank(hdmi_coordinate_read(info));
+	return coord.col < 160u;
+}
+
+static bool hdmi_coordinate_is_vsync(struct hdmi_coordinate coord)
+{
+	return coord.row >= 10u && coord.row < 12u;
 }
 
 /*******************************************************************************
@@ -192,6 +196,11 @@ static struct fb_fix_screeninfo hdmi_fix_init = {
 };
 
 static struct fb_var_screeninfo hdmi_var_init = {
+	/*
+	 * Timing fields are taken from: drivers/video/fbdev/core/modedb.c.
+	 * Specifically, see the entries in `modedb`, and look at the conversion
+	 * in `fb_videomode_to_var`.
+	 */
 	.xres = 640,
 	.yres = 480,
 	.xres_virtual = 640,
@@ -399,22 +408,49 @@ static int hdmi_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 	hdmi_assert_init(info);
 
 	switch (cmd) {
-
 	case FBIOGET_VBLANK: {
-		return -ENOTTY;
+		struct fb_vblank ret;
+		struct hdmi_coordinate coord;
+#if 0
+		// This could spam the log since it could be called on every
+		// frame, so we disable it
+		pr_debug("called ioctl(FBIOGET_VBLANK) on %p\n", info);
+#endif
+		memset(&ret, 0, sizeof(ret));
+		ret.flags = FB_VBLANK_HAVE_VBLANK | FB_VBLANK_HAVE_HBLANK |
+			    FB_VBLANK_HAVE_COUNT | FB_VBLANK_HAVE_VCOUNT |
+			    FB_VBLANK_HAVE_HCOUNT | FB_VBLANK_HAVE_VSYNC;
+
+		coord = hdmi_coordinate_read(info);
+		ret.count = coord.fid;
+		ret.vcount = coord.row;
+		ret.hcount = coord.col;
+		if (hdmi_coordinate_is_vblank(coord))
+			ret.flags |= FB_VBLANK_VBLANKING;
+		if (hdmi_coordinate_is_hblank(coord))
+			ret.flags |= FB_VBLANK_HBLANKING;
+		if (hdmi_coordinate_is_vsync(coord))
+			ret.flags |= FB_VBLANK_VSYNCING;
+
+		BUILD_BUG_ON(sizeof(ret) == 0);
+		if (copy_to_user((void __user *)arg, &ret, sizeof(ret)))
+			return -EFAULT;
+		return 0;
 	}
 
 	case FBIO_WAITFORVSYNC: {
 		int res;
 #if 0
-		// This causes log spam, so we disable it
+		// This could spam the log since it could be called on every
+		// frame, so we disable it
 		pr_debug("called ioctl(FBIO_WAITFORVSYNC) on %p\n", info);
 #endif
 		// Each frame is just under 17ms. We give a 20% margin. If we
 		// don't hear back by then, something is wrong.
-		res = wait_event_interruptible_timeout(hdmi_vblank_waitq,
-						       hdmi_in_vblank(info),
-						       msecs_to_jiffies(20));
+		res = wait_event_interruptible_timeout(
+			hdmi_vblank_waitq,
+			hdmi_coordinate_is_vblank(hdmi_coordinate_read(info)),
+			msecs_to_jiffies(20));
 		if (res == -ERESTARTSYS)
 			return -EINTR;
 		return WARN_ON(res == 0) ? -ETIMEDOUT : 0;
