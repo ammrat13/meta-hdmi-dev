@@ -34,7 +34,7 @@ invalid.
 ### `FBIO_WAITFORVSYNC`
 This `ioctl` waits until the scan dot is in *vertical blanking*. This does not
 necesarily wait for the next frame's vertical blanking interval. It returns `0`
-on success, or `EINTR`. It should never return `ETIMEDOUT` --- something's gone
+on success, or `EINTR`. It should never return `ETIMEDOUT` - something's gone
 wrong if it does.
 
 [1]: https://github.com/ammrat13/hdmi-cmd-gen "ammrat13/hdmi-cmd-gen"
